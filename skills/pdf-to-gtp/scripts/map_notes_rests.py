@@ -1,4 +1,5 @@
-# map_notes_rests.py
+import re
+import sys
 import fitz
 from extract_geometry import get_systems_and_measures
 
@@ -20,19 +21,18 @@ def map_tokens(page_idx, page, systems):
 
                     # Find containing system
                     containing_sys = None
-                    for sys_idx, sys in enumerate(systems):
-                        if sys['y0'] - 10 <= y_mid <= sys['y1'] + 15:
-                            containing_sys = sys
+                    sys_num = -1
+                    for sys_idx, sys_item in enumerate(systems):
+                        if sys_item['y0'] - 10 <= y_mid <= sys_item['y1'] + 15:
+                            containing_sys = sys_item
                             sys_num = sys_idx + 1
                             break
-
 
                     if not containing_sys:
                         continue
 
-                    # In our sheet layout, the TAB section occupies from containing_sys['y0'] to containing_sys['y1']
-                    # Any token with y_mid more than 10pt below containing_sys['y1'] is excluded (lyrics / jianpu numbers)
-                    if y_mid > containing_sys['y1'] + 10:
+                    # Exclude text far below the TAB staff (lyrics / jianpu)
+                    if y_mid > containing_sys['y1'] + 12:
                         continue
 
                     # Find containing measure index inside the system
@@ -46,22 +46,44 @@ def map_tokens(page_idx, page, systems):
                     if measure_idx == -1:
                         continue
 
-                    # Check if it is a fret digit
-                    if text.isdigit() and span["size"] > 6.0:
-                        # Map to string (1 to 6) based on closest line
-                        dists = [abs(y_mid - (containing_sys['y0'] + i * containing_sys['spacing'])) for i in range(6)]
-                        string_num = dists.index(min(dists)) + 1 # 1-indexed (1=highest, 6=lowest)
+                    # Distance to each of the 6 strings (1 = highest string, 6 = lowest string)
+                    dists = [abs(y_mid - (containing_sys['y0'] + i * containing_sys['spacing'])) for i in range(6)]
+                    min_dist = min(dists)
+                    if min_dist > 2.0:
+                        # Too far vertically from any string line (e.g. measure numbers, chord text)
+                        continue
+                    string_num = dists.index(min_dist) + 1
+
+                    # 1. Match fret number (regular, harmonic <12>, ghost note (3))
+                    m_fret = re.match(r'^[<(]?(\d+)[>)]?$', text)
+                    if m_fret and span["size"] >= 4.5:
+                        fret_val = int(m_fret.group(1))
                         tokens.append({
                             'type': 'note',
-                            'val': int(text),
+                            'val': fret_val,
                             'string': string_num,
                             'x': x_mid,
                             'y': y_mid,
                             'sys_num': sys_num,
-                            'measure_idx': measure_idx
+                            'measure_idx': measure_idx,
+                            'is_harmonic': ('<' in text and '>' in text),
+                            'is_ghost': ('(' in text and ')' in text)
                         })
 
-                    # Check if it is a rest symbol
+                    # 2. Match dead note text X / x
+                    elif text.upper() == 'X' and span["size"] >= 4.5:
+                        tokens.append({
+                            'type': 'note',
+                            'val': 'X',
+                            'string': string_num,
+                            'x': x_mid,
+                            'y': y_mid,
+                            'sys_num': sys_num,
+                            'measure_idx': measure_idx,
+                            'is_dead': True
+                        })
+
+                    # 3. Check for rest symbols
                     elif any(ord(c) in [0xE4E5, 0xE4E6] for c in text):
                         rest_type = 'quarter' if any(ord(c) == 0xE4E5 for c in text) else 'eighth'
                         tokens.append({
@@ -72,14 +94,20 @@ def map_tokens(page_idx, page, systems):
                             'sys_num': sys_num,
                             'measure_idx': measure_idx
                         })
+
     return tokens
 
 if __name__ == "__main__":
-    doc = fitz.open("青花瓷 指弹吉他谱_周杰伦.pdf")
-    for i in range(1):
+    if len(sys.argv) > 1:
+        pdf_path = sys.argv[1]
+    else:
+        print("Usage: python map_notes_rests.py <pdf_path>")
+        sys.exit(1)
+
+    doc = fitz.open(pdf_path)
+    for i in range(len(doc)):
         systems = get_systems_and_measures(doc[i])
         tokens = map_tokens(i, doc[i], systems)
         print(f"Page {i+1} mapped {len(tokens)} tokens.")
-        # Print first 5 tokens
         for t in tokens[:5]:
-            print(t)
+            print(" ", t)

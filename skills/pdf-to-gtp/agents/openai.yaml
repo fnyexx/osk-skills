@@ -1,4 +1,0 @@
-interface:
-  display_name: "PDF to GTP"
-  short_description: "Convert PDF guitar tabs into Guitar Pro GP5/GTP files."
-  default_prompt: "Use $pdf-to-gtp to convert this PDF guitar tab into an editable GP5 or GTP file."

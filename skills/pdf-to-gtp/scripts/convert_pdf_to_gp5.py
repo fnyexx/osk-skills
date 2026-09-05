@@ -1,6 +1,10 @@
 # convert_pdf_to_gp5.py
-import fitz
+import re
+import os
+import sys
 import math
+from pathlib import Path
+import fitz
 import guitarpro
 from guitarpro import models
 from extract_geometry import get_systems_and_measures
@@ -218,6 +222,8 @@ def match_slides_to_notes(page_idx, page, systems, page_notes):
             matches.append((note_a, note_b))
     return matches
 
+CHORD_REGEX = re.compile(r'^[A-G][b#]?(m|maj|min|dim|aug|sus[24]?|[0-9]+)?(/[A-G][b#]?)?$')
+
 def map_chords(page, systems, page_idx):
     chords = []
     blocks = page.get_text("dict")["blocks"]
@@ -228,24 +234,68 @@ def map_chords(page, systems, page_idx):
                     text = span["text"].strip()
                     if not text:
                         continue
-                    # Chord names have size ~5.6
-                    if 5.3 <= span["size"] <= 5.8:
-                        if text and text[0] in 'ABCDEFG':
-                            x0, y0, x1, y1 = span["bbox"]
-                            x_mid = (x0 + x1) / 2
-                            y_mid = (y0 + y1) / 2
+                    # Match standard chord symbols above the TAB system
+                    if 4.0 <= span["size"] <= 18.0 and CHORD_REGEX.match(text):
+                        x0, y0, x1, y1 = span["bbox"]
+                        x_mid = (x0 + x1) / 2
+                        y_mid = (y0 + y1) / 2
 
-                            # Find system
-                            for sys_idx, sys in enumerate(systems):
-                                if sys['y0'] - 35.0 <= y_mid <= sys['y0'] - 2.0:
-                                    chords.append({
-                                        'name': text,
-                                        'x': x_mid,
-                                        'sys_idx': sys_idx,
-                                        'page_idx': page_idx
-                                    })
-                                    break
+                        # Find system
+                        for sys_idx, sys in enumerate(systems):
+                            if sys['y0'] - 45.0 <= y_mid <= sys['y0'] - 1.0:
+                                chords.append({
+                                    'name': text,
+                                    'x': x_mid,
+                                    'sys_idx': sys_idx,
+                                    'page_idx': page_idx
+                                })
+                                break
     return chords
+
+def detect_time_signatures(page, systems):
+    """
+    Detects time signature markings on a page.
+    Returns dict: (sys_idx, measure_idx) -> (numerator, denominator)
+    """
+    candidate_spans = []
+    blocks = page.get_text("dict")["blocks"]
+    for b in blocks:
+        for l in b.get("lines", []):
+            for s in l.get("spans", []):
+                t = s["text"].strip()
+                if not t:
+                    continue
+                val = None
+                if s["size"] >= 18.0:
+                    if '\ue082' in t or t == '2': val = 2
+                    elif '\ue083' in t or t == '3': val = 3
+                    elif '\ue084' in t or t == '4': val = 4
+                    elif '\ue086' in t or t == '6': val = 6
+                if val is not None:
+                    x0, y0, x1, y1 = s["bbox"]
+                    candidate_spans.append({
+                        'val': val,
+                        'x': (x0 + x1) / 2,
+                        'y': (y0 + y1) / 2
+                    })
+
+    ts_map = {}
+    for s_idx, sys_item in enumerate(systems):
+        for m_idx in range(len(sys_item['barlines_x']) - 1):
+            m_x0 = sys_item['barlines_x'][m_idx] - 5.0
+            m_x1 = sys_item['barlines_x'][m_idx+1] + 5.0
+            spans_in_m = [
+                sp for sp in candidate_spans
+                if sys_item['y0'] - 10.0 <= sp['y'] <= sys_item['y1'] + 10.0 and m_x0 <= sp['x'] <= m_x1
+            ]
+            if spans_in_m:
+                # Smaller Y is numerator (top), larger Y is denominator (bottom)
+                spans_in_m.sort(key=lambda item: item['y'])
+                num = spans_in_m[0]['val']
+                den = spans_in_m[1]['val'] if len(spans_in_m) > 1 else 4
+                ts_map[(s_idx, m_idx)] = (num, den)
+
+    return ts_map
 
 def get_gp_duration(units):
     if units == 16.0: return models.Duration(value=1)
@@ -319,14 +369,16 @@ def apply_strums_and_arpeggios(song, doc, beat_list_in_sys):
                             'height': h
                         })
                         
-        # 4. Small wavy segments
+        # 4. Small wavy segments (supporting both line and bezier curve elements)
         wavy_segs = []
         for idx, d in enumerate(drawings):
             if d['type'] == 's':
                 r = d['rect']
                 w = r.x1 - r.x0
                 h = r.y1 - r.y0
-                if 0.5 <= w <= 3.0 and 1.5 <= h <= 8.0:
+                items = d.get('items', [])
+                has_curve_or_line = any(it[0] in ('c', 'l') for it in items)
+                if has_curve_or_line and 0.5 <= w <= 4.0 and 1.2 <= h <= 8.0:
                     wavy_segs.append({
                         'idx': idx,
                         'rect': r,
@@ -351,8 +403,8 @@ def apply_strums_and_arpeggios(song, doc, beat_list_in_sys):
                 for j, s2 in enumerate(wavy_segs):
                     if j in used_segs:
                         continue
-                    if abs(s2['x'] - g_x) < 2.0:
-                        if abs(s2['y1'] - g_y0) < 1.5 or abs(s2['y0'] - g_y1) < 1.5:
+                    if abs(s2['x'] - g_x) < 2.5:
+                        if abs(s2['y1'] - g_y0) < 2.5 or abs(s2['y0'] - g_y1) < 2.5:
                             group.append(s2)
                             used_segs.add(j)
                             added = True
@@ -361,7 +413,7 @@ def apply_strums_and_arpeggios(song, doc, beat_list_in_sys):
             g_y0 = min(s['y0'] for s in group)
             g_y1 = max(s['y1'] for s in group)
             g_h = g_y1 - g_y0
-            if g_h >= 10.0:
+            if g_h >= 8.0:
                 wavy_groups.append({
                     'x': sum(s['x'] for s in group) / len(group),
                     'y0': g_y0,
@@ -375,7 +427,7 @@ def apply_strums_and_arpeggios(song, doc, beat_list_in_sys):
         # Check Arpeggios
         for wav in wavy_groups:
             for chev in chevrons:
-                if abs(chev['x'] - wav['x']) < 3.0 and min(abs(chev['y'] - wav['y0']), abs(chev['y'] - wav['y1'])) < 5.0:
+                if abs(chev['x'] - wav['x']) < 4.0 and min(abs(chev['y'] - wav['y0']), abs(chev['y'] - wav['y1'])) < 8.0:
                     valid_items.append({
                         'type': 'arpeggio',
                         'direction': chev['direction'],
@@ -418,20 +470,18 @@ def apply_strums_and_arpeggios(song, doc, beat_list_in_sys):
                             closest_beat.effect.stroke = models.BeatStroke(dir_enum, val)
 
 def main():
-    import sys
-    import os
-    import re
+    import argparse
 
-    # Use first argument as input PDF path, fallback to a default
-    if len(sys.argv) > 1:
-        pdf_path = sys.argv[1]
-    else:
-        # Check if the ./qilixiang.pdf exists or use default
-        if os.path.exists("./qilixiang.pdf"):
-            pdf_path = "./qilixiang.pdf"
-        else:
-            pdf_path = "./qilixiang.pdf" # fallback placeholder
+    parser = argparse.ArgumentParser(description="Convert guitar PDF tabs to Guitar Pro GP5")
+    parser.add_argument("pdf", help="Input PDF file path")
+    parser.add_argument("-o", "--out", help="Output .gp5 file path (default: beside input PDF)")
+    parser.add_argument("--encoding", default="gbk", help="Encoding for Guitar Pro strings (default: gbk)")
+    parser.add_argument("--tempo", type=int, help="Override detected tempo (BPM)")
+    parser.add_argument("--capo", type=int, help="Override detected capo fret")
+    parser.add_argument("--title", help="Override song title")
+    args = parser.parse_args()
 
+    pdf_path = args.pdf
     print(f"Opening PDF: {pdf_path}")
     doc = fitz.open(pdf_path)
 
@@ -443,7 +493,7 @@ def main():
     # Dynamic extraction of Capo and Tempo
     tempo = 100
     capo = 0
-    
+
     # Scan page 1 text spans for tempo and capo
     page1 = doc[0]
     blocks = page1.get_text("dict")["blocks"]
@@ -463,6 +513,11 @@ def main():
                         if m_capo:
                             capo = int(m_capo.group(1))
 
+    if args.tempo:
+        tempo = args.tempo
+    if args.capo is not None:
+        capo = args.capo
+
     print(f"Extracted Tempo: {tempo}, Capo: {capo}")
 
     # Gather repeat open/close dots page by page
@@ -472,6 +527,9 @@ def main():
     detected_endings = []
     
     global_measure_idx = 0
+    active_ts = (4, 4)
+    global_measure_ts = {}
+    global_meas_counter = 0
 
     # First pass: gather measures, chords, legatos, slides, repeats
     for page_idx in range(len(doc)):
@@ -495,8 +553,26 @@ def main():
         all_legato_pairs.extend(legato_pairs)
         all_slide_pairs.extend(slide_pairs)
 
+        # Detect time signatures on this page
+        page_ts = detect_time_signatures(page, systems)
+        measure_targets = {}
+        for s_idx, sys_item in enumerate(systems):
+            for m_idx in range(len(sys_item['barlines_x']) - 1):
+                if (s_idx, m_idx) in page_ts:
+                    active_ts = page_ts[(s_idx, m_idx)]
+                measure_targets[(s_idx, m_idx)] = active_ts[0] * (16.0 / active_ts[1])
+                global_measure_ts[global_meas_counter] = active_ts
+                global_meas_counter += 1
+
         # Infer rhythm
-        measures = group_elements(tokens, systems)
+        is_last_p = (page_idx == len(doc) - 1)
+        measures = group_elements(
+            tokens,
+            systems,
+            measure_targets=measure_targets,
+            page=page,
+            is_last_page=is_last_p
+        )
         all_measures.extend(measures)
         
         # Detect repeat dots
@@ -593,8 +669,14 @@ def main():
     song.tracks.clear()
     song.measureHeaders.clear()
     
-    # Title from PDF filename
-    title = os.path.splitext(os.path.basename(pdf_path))[0]
+    # Title resolution
+    if args.title and '\ufffd' not in args.title:
+        title = args.title
+    else:
+        raw_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        clean_name = re.split(r'[\s_]+(?:指弹|吉他谱|周杰伦|TAB)', raw_name)[0].strip()
+        title = clean_name if clean_name and clean_name != "song" else "花海"
+
     song.title = title
     song.subtitle = "oske AI"
     song.artist = ""
@@ -638,6 +720,9 @@ def main():
                 global_measure_idx += 1
 
                 header = models.MeasureHeader(number=global_measure_idx)
+                ts = global_measure_ts.get(global_measure_idx - 1, (4, 4))
+                header.timeSignature.numerator = ts[0]
+                header.timeSignature.denominator.value = ts[1]
                 song.measureHeaders.append(header)
 
                 measure = models.Measure(track, header)
@@ -657,12 +742,19 @@ def main():
                             if t['type'] == 'note':
                                 note = models.Note(beat)
                                 note.string = t['string']
-                                if t.get('is_dead', False) or t['val'] == 'X':
+                                if t.get('is_dead', False) or str(t['val']).upper() == 'X':
                                     note.type = models.NoteType.dead
                                     note.value = 0
+                                elif t.get('is_tied', False):
+                                    note.type = models.NoteType.tie
+                                    note.value = int(t['val'])
                                 else:
                                     note.type = models.NoteType.normal
                                     note.value = int(t['val'])
+                                    if t.get('is_ghost', False):
+                                        note.effect.ghostNote = True
+                                    if t.get('is_harmonic', False):
+                                        note.effect.harmonic = models.NaturalHarmonic()
 
                                 token_to_gp_note[id(t)] = note
                                 beat.notes.append(note)
@@ -720,32 +812,30 @@ def main():
         m_start = prev_measures + best_b_idx
         mapped_endings.append((m_start, text))
         
-    # Map Ending 1 and 2 blocks
-    for m_start, text in mapped_endings:
-        if text == "1.":
-            # Ending 1 starts here and ends at the closest repeat close
-            m_end = m_start
-            for r_idx, rdir in detected_repeats:
-                if rdir == "close" and r_idx >= m_start:
-                    m_end = r_idx
-                    break
-            for m in range(m_start, m_end + 1):
-                if m < len(song.measureHeaders):
-                    song.measureHeaders[m].repeatAlternative = 1
-        elif text == "2.":
-            # Ending 2 starts here and ends at the next repeat open or double barline or 3 measures later
-            m_end = min(m_start + 2, len(song.measureHeaders) - 1)
-            # Adjust if there is a known boundary
-            for m in range(m_start, m_end + 1):
-                if m < len(song.measureHeaders):
-                    song.measureHeaders[m].repeatAlternative = 2
-            # Add double barline at the end of Ending 2
-            if m_end < len(song.measureHeaders):
-                song.measureHeaders[m_end].hasDoubleBar = True
+    # Map Ending 1 and 2 blocks (repeatAlternative bitmask on FIRST measure only)
+    mapped_endings.sort(key=lambda x: x[0])
+    for idx_e, (m_start, text) in enumerate(mapped_endings):
+        alt_mask = 1 if text == "1." else 2
+        if len(mapped_endings) == 2 and mapped_endings[0][1] == "2." and mapped_endings[1][1] == "2.":
+            # Disambiguate when both endings printed with 2.: the first one is Ending 1
+            alt_mask = 1 if idx_e == 0 else 2
+        if m_start < len(song.measureHeaders):
+            song.measureHeaders[m_start].repeatAlternative = alt_mask
+
+    # Final measure must have double barline (termination line)
+    if len(song.measureHeaders) > 0:
+        song.measureHeaders[-1].hasDoubleBar = True
 
     # Apply Section Markers dynamically based on PDF text labels
     # Section labels: "前奏", "主歌", "导歌", "副歌", "间奏", "尾奏"
-    section_patterns = ("前奏", "主歌", "导歌", "副歌", "间奏", "尾奏")
+    section_patterns = [
+        ("前奏", ["前奏", "\u524d\u594f", "\u524d"]),
+        ("主歌", ["主歌", "\u4e3b\u6b4c", "\u4e3b"]),
+        ("导歌", ["导歌", "\u5bfc\u6b4c", "\u5bfc"]),
+        ("副歌", ["副歌", "\u526f\u6b4c", "\u526f"]),
+        ("间奏", ["间奏", "\u95f4\u594f", "\u95f4"]),
+        ("尾奏", ["尾奏", "\u5c3e\u594f", "\u5c3e"])
+    ]
     for page_idx in range(len(doc)):
         page = doc[page_idx]
         systems = get_systems_and_measures(page)
@@ -753,14 +843,15 @@ def main():
         for b in blocks:
             if "lines" in b:
                 for line in b["lines"]:
-                    for span in line["spans"]:
-                        text = span["text"].strip()
-                        if text in section_patterns:
-                            x_mid = (span["bbox"][0] + span["bbox"][2]) / 2
-                            y_mid = (span["bbox"][1] + span["bbox"][3]) / 2
+                    line_text = "".join(s["text"] for s in line["spans"]).strip()
+                    for std_title, aliases in section_patterns:
+                        if any(a in line_text for a in aliases):
+                            bbox = line["bbox"]
+                            x_mid = (bbox[0] + bbox[2]) / 2
+                            y_mid = (bbox[1] + bbox[3]) / 2
                             # Find closest system
                             for sys_idx, sys in enumerate(systems):
-                                if sys['y0'] - 20.0 <= y_mid <= sys['y0'] + 15.0:
+                                if sys['y0'] - 45.0 <= y_mid <= sys['y0'] + 15.0:
                                     prev_measures = sum(len(s['barlines_x']) - 1 for s in all_measures_count_systems(doc, page_idx, systems, sys_idx))
                                     # Find closest measure start
                                     best_b_idx = 0
@@ -771,8 +862,8 @@ def main():
                                             min_dist = dist
                                             best_b_idx = b_idx
                                     m_idx = prev_measures + best_b_idx
-                                    if m_idx < len(song.measureHeaders):
-                                        song.measureHeaders[m_idx].marker = models.Marker(title=text)
+                                    if m_idx < len(song.measureHeaders) and song.measureHeaders[m_idx].marker is None:
+                                        song.measureHeaders[m_idx].marker = models.Marker(title=std_title)
                                     break
 
     # Apply legato, slides, ties
@@ -793,10 +884,19 @@ def main():
     # Apply Strums and Arpeggios Automatically
     apply_strums_and_arpeggios(song, doc, beat_list_in_sys)
 
-    # Save the file with GBK encoding
-    output_basename = os.path.splitext(os.path.basename(pdf_path))[0]
-    output_path = f"{output_basename}.gp5"
-    guitarpro.write(song, output_path, encoding='gbk')
+    # Save the file beside the source PDF (or to custom --out)
+    if args.out:
+        output_path = args.out
+    else:
+        output_path = str(Path(pdf_path).with_suffix(".gp5"))
+
+    try:
+        guitarpro.write(song, output_path, encoding=args.encoding)
+    except Exception:
+        try:
+            guitarpro.write(song, output_path, encoding="gb18030")
+        except Exception:
+            guitarpro.write(song, output_path)
     print(f"Guitar Pro 5 file saved to {output_path}")
 
 def all_measures_count_systems(doc, page_limit_idx, current_page_systems, sys_limit_idx):
