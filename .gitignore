@@ -145,6 +145,9 @@ cython_debug/
 .DS_Store
 Thumbs.db
 
+# Superpowers local state
+.superpowers/
+
 # Project-specific temp/output files for pdf-to-gtp
 skills/pdf-to-gtp/scripts/images/
 skills/pdf-to-gtp/scripts/temp.gp5

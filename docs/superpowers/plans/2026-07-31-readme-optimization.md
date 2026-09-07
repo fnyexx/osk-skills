@@ -1,3 +1,35 @@
+# README.md 优化实施计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 优化根目录 `README.md`，增加 `scanned-pdf-to-excel` 技能说明，建立 Markdown 表格形式的技能速查矩阵、完整的项目目录树、技能安装指引以及模块化的技能使用卡片。
+
+**Architecture:** 直接更新根目录下的 `README.md` 文件。
+
+**Tech Stack:** Markdown
+
+## Global Constraints
+
+- 保持简体中文描述
+- 包含现有的 `pdf-to-gtp` 与新增的 `scanned-pdf-to-excel` 两个技能
+- 维持代码块语法高亮与正确的引用路径
+
+---
+
+### Task 1: 更新 README.md 内容
+
+**Files:**
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `docs/superpowers/specs/2026-07-31-readme-optimization-design.md`
+- Produces: 优化后的 `README.md`
+
+- [ ] **Step 1: 写入/更新 README.md 文件**
+
+将 `README.md` 替换为以下内容：
+
+```markdown
 # osk-skills
 
 存放个人自定义 [Claude Code](https://claude.ai/code) 技能（Skills）的模块化仓库。你可以将这些技能引入你的 Claude Code 配置中，辅助开发与各类自动化处理任务。
@@ -8,7 +40,6 @@
 | :--- | :--- | :--- | :--- |
 | **`pdf-to-gtp`** | 吉他/贝斯 PDF 乐谱转 Guitar Pro (`.gp5`) | 自动化向量几何解析、五线谱与 TAB 弦高音推导 | PyMuPDF, pyguitarpro, pdfminer.six |
 | **`scanned-pdf-to-excel`** | 扫描件/大文件 PDF 账单转结构化 Excel | 多模态视觉/本地 RapidOCR 双引擎，图像 1280px 压缩 + CSV 输出 (**节省 70% Token**) | PyMuPDF, rapidocr_onnxruntime, openpyxl, pandas |
-| **`image-gen`** | 跨 Agent 通用图像生成（文本生图/垫图改图） | 零依赖独立运行，支持长提示词文件、种子控制、重试与元数据追溯 | Node.js (>=18) |
 
 ---
 
@@ -19,12 +50,6 @@ osk-skills/
 ├── README.md               # 仓库使用说明
 ├── .gitignore              # Git 忽略文件（忽略编译缓存与测试临时产物）
 └── skills/                 # 统一管理所有自定义技能的子目录
-    ├── image-gen/              # 跨 Agent 图像生成技能组
-    │   ├── SKILL.md            # 技能定义与生图规范
-    │   ├── README.md           # 详细使用说明
-    │   ├── config.example.json # 配置文件模板
-    │   └── scripts/
-    │       └── generate.js     # 零依赖生图脚本
     ├── pdf-to-gtp/         # PDF 转换为 Guitar Pro (.gp5) 文件技能组
     │   ├── SKILL.md            # 技能描述与 prompt 指引
     │   ├── agents/
@@ -52,7 +77,6 @@ cp -r ./skills/* ~/.claude/skills/
 # 或使用软链接引用特定技能（推荐，方便随仓库更新）
 ln -s $(pwd)/skills/pdf-to-gtp ~/.claude/skills/pdf-to-gtp
 ln -s $(pwd)/skills/scanned-pdf-to-excel ~/.claude/skills/scanned-pdf-to-excel
-ln -s $(pwd)/skills/image-gen ~/.claude/skills/image-gen
 ```
 
 ---
@@ -91,21 +115,21 @@ ln -s $(pwd)/skills/image-gen ~/.claude/skills/image-gen
   PYTHONIOENCODING=utf-8 python ./skills/scanned-pdf-to-excel/scripts/merge_to_excel.py <task_dir>/results <output_path.xlsx> [total_pages]
   ```
 
-### 3. `image-gen` (跨 Agent 通用图像生成)
-> 详细说明请参阅 [`skills/image-gen/README.md`](skills/image-gen/README.md) 与 [`skills/image-gen/SKILL.md`](skills/image-gen/SKILL.md)
-
-- **环境依赖**：
-  Node.js (>= 18)，无需额外 npm 依赖。复制 `config.example.json` 为 `config.json` 并配置 API Key。
-- **核心命令示例**：
-  ```bash
-  # 1. 基础生图 (默认 1:1, 2K 分辨率)
-  node ./skills/image-gen/scripts/generate.js -p "Cyberpunk neon city street, rainy night"
-
-  # 2. 长提示词文件与参数控制
-  node ./skills/image-gen/scripts/generate.js --prompt-file ./prompt.txt -r 16:9 -s 4K -n 2
-  ```
-
 ---
 
 ## 🤝 贡献与交流
 如果你有其他实用的 Claude Code 技能，欢迎提交 PR 扩展本仓库！
+```
+
+- [ ] **Step 2: 校验文件改动**
+
+校验 `README.md` 内容是否与设计方案完全一致。
+
+- [ ] **Step 3: 提交 Git 变更**
+
+```bash
+git add README.md
+git commit -m "docs: optimize README with skill matrix and scanned-pdf-to-excel guide
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```

@@ -1,0 +1,8 @@
+{
+  "apiKey": "your-api-key-here",
+  "model": "gemini-flash-image",
+  "aspectRatio": "1:1",
+  "imageSize": "2K",
+  "outputDir": "image-gen",
+  "baseUrl": "https://hkfx.058279.xyz"
+}
